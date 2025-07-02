@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  # Service principal pour le développement
+  app:
+    build: 
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: rimoo-rasberry-dev
+    volumes:
+      # Montage du code pour développement en temps réel
+      - ./app:/app/app
+      - ./config:/app/config
+      - ./package.json:/app/package.json
+      # Montage des logs pour debugging
+      - ./logs:/var/log
+    ports:
+      - "3000:3000"  # Port principal de l'app
+      - "3001:3001"  # Port pour services additionnels si besoin
+    environment:
+      - NODE_ENV=development
+      - DEBUG=*
+    tty: true          # Permet docker exec -it
+    stdin_open: true   # Garde stdin ouvert
+    # Commande pour garder le container en vie et permettre le développement
+    command: >
+      /bin/bash -c "
+      echo 'Container de développement démarré' && 
+      echo 'Utilisez: docker exec -it rimoo-rasberry-dev /bin/bash' &&
+      echo 'Ou: docker-compose exec app /bin/bash' &&
+      /usr/local/bin/start.sh"
+    
+  # Service pour production/test (optionnel)
+  app-prod:
+    build: 
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: rimoo-rasberry-prod
+    ports:
+      - "3000"
+    environment:
+      - NODE_ENV=production
+    profiles:
+      - production
+    # Utilise directement le script de démarrage pour la production
+    command: /usr/local/bin/start.sh 

@@ -1,0 +1,26 @@
+{
+  "name": "rimoo-rasberry",
+  "version": "1.0.0",
+  "description": "Application multi-services pour Raspberry Pi avec développement hybride Docker + Remote SSH",
+  "main": "app/index.js",
+  "scripts": {
+    "start": "node app/index.js",
+    "dev": "npm run dev:all",
+    "dev:app": "nodemon app/index.js",
+    "dev:service1": "nodemon app/service1/index.js",
+    "dev:service2": "nodemon app/service2/index.js",
+    "dev:all": "concurrently \"npm run dev:app\" \"npm run dev:service1\" \"npm run dev:service2\"",
+    "service1": "node app/service1/index.js",
+    "service2": "node app/service2/index.js"
+  },
+  "keywords": ["raspberry-pi", "docker", "nodejs", "multi-services", "remote-ssh"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0",
+    "concurrently": "^8.2.0"
+  }
+} 
