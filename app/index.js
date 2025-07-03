@@ -3,7 +3,7 @@ const app = express();
 const port = 3000;
 
 app.get('/', (req, res) => {
-  res.send('Hello from Rimoo Raspberry App! Main service is running. v1.0.0');
+  res.send('Hello from Rimoo Raspberry App! Main service is running. v1.0.2');
 });
 
 app.listen(port, () => {
