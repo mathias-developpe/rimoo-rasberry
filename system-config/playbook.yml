@@ -1,0 +1,266 @@
+---
+- name: Configuration système complète Raspberry Pi
+  hosts: localhost
+  connection: local
+  become: yes
+  vars:
+    project_path: "/home/mathias/Desktop/rimoo-rasberry"
+    system_user: "mathias"
+    
+  tasks:
+    # ============================================================================
+    # PACKAGES SYSTÈME
+    # ============================================================================
+    - name: Mettre à jour le cache APT
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Installer les packages système essentiels
+      apt:
+        name:
+          - git
+          - curl
+          - wget
+          - htop
+          - tree
+          - vim
+          - nodejs
+          - npm
+          - nginx
+          - python3-pip
+          - systemd
+          - fail2ban
+          - ufw
+          - rsync
+          - cron
+        state: present
+
+    # ============================================================================
+    # CONFIGURATION SYSTÈME
+    # ============================================================================
+    - name: Créer les dossiers système nécessaires
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ system_user }}"
+        group: "{{ system_user }}"
+        mode: '0755'
+      loop:
+        - "/opt/rimoo-services"
+        - "/var/log/rimoo"
+        - "/etc/rimoo"
+
+    - name: Configurer le hostname
+      hostname:
+        name: rimoo-rasberry
+      notify: restart systemd-logind
+
+    - name: Configurer les limites système
+      template:
+        src: system-limits.conf.j2
+        dest: /etc/security/limits.d/rimoo.conf
+        backup: yes
+      notify: restart systemd-logind
+
+    # ============================================================================
+    # SERVICES SYSTEMD
+    # ============================================================================
+    - name: Créer le service systemd principal
+      template:
+        src: rimoo-app.service.j2
+        dest: /etc/systemd/system/rimoo-app.service
+        backup: yes
+      notify: 
+        - reload systemd
+        - restart rimoo-app
+
+    - name: Créer le service systemd pour service1
+      template:
+        src: rimoo-service1.service.j2
+        dest: /etc/systemd/system/rimoo-service1.service
+        backup: yes
+      notify: 
+        - reload systemd
+        - restart rimoo-service1
+
+    - name: Créer le service systemd pour service2
+      template:
+        src: rimoo-service2.service.j2
+        dest: /etc/systemd/system/rimoo-service2.service
+        backup: yes
+      notify: 
+        - reload systemd
+        - restart rimoo-service2
+
+    - name: Créer le service d'auto-déploiement
+      template:
+        src: rimoo-autodeploy.service.j2
+        dest: /etc/systemd/system/rimoo-autodeploy.service
+        backup: yes
+      notify: reload systemd
+
+    - name: Créer le timer d'auto-déploiement
+      template:
+        src: rimoo-autodeploy.timer.j2
+        dest: /etc/systemd/system/rimoo-autodeploy.timer
+        backup: yes
+      notify: reload systemd
+
+    # ============================================================================
+    # SCRIPTS SYSTÈME
+    # ============================================================================
+    - name: Créer le script d'auto-déploiement
+      template:
+        src: auto-deploy.sh.j2
+        dest: /usr/local/bin/rimoo-autodeploy.sh
+        mode: '0755'
+        backup: yes
+
+    - name: Créer le script de monitoring
+      template:
+        src: monitor.sh.j2
+        dest: /usr/local/bin/rimoo-monitor.sh
+        mode: '0755'
+        backup: yes
+
+    - name: Créer le script de backup
+      template:
+        src: backup.sh.j2
+        dest: /usr/local/bin/rimoo-backup.sh
+        mode: '0755'
+        backup: yes
+
+    # ============================================================================
+    # CONFIGURATION NGINX
+    # ============================================================================
+    - name: Configurer nginx pour le projet
+      template:
+        src: nginx-rimoo.conf.j2
+        dest: /etc/nginx/sites-available/rimoo
+        backup: yes
+      notify: restart nginx
+
+    - name: Activer le site nginx
+      file:
+        src: /etc/nginx/sites-available/rimoo
+        dest: /etc/nginx/sites-enabled/rimoo
+        state: link
+      notify: restart nginx
+
+    - name: Désactiver le site nginx par défaut
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: restart nginx
+
+    # ============================================================================
+    # SÉCURITÉ
+    # ============================================================================
+    - name: Configurer fail2ban
+      template:
+        src: fail2ban-rimoo.conf.j2
+        dest: /etc/fail2ban/jail.d/rimoo.conf
+        backup: yes
+      notify: restart fail2ban
+
+    - name: Configurer UFW - Autoriser SSH
+      ufw:
+        rule: allow
+        port: 22
+        proto: tcp
+
+    - name: Configurer UFW - Autoriser HTTP/HTTPS
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - 80
+        - 443
+        - 3000
+        - 3001
+
+    - name: Activer UFW
+      ufw:
+        state: enabled
+
+    # ============================================================================
+    # ACTIVATION DES SERVICES
+    # ============================================================================
+    - name: Activer et démarrer les services systemd
+      systemd:
+        name: "{{ item }}"
+        enabled: yes
+        state: started
+        daemon_reload: yes
+      loop:
+        - rimoo-app
+        - rimoo-service1
+        - rimoo-service2
+        - rimoo-autodeploy.timer
+        - nginx
+        - fail2ban
+        - ufw
+
+    # ============================================================================
+    # CRONTAB ET MAINTENANCE
+    # ============================================================================
+    - name: Ajouter les tâches cron de maintenance
+      cron:
+        name: "{{ item.name }}"
+        minute: "{{ item.minute }}"
+        hour: "{{ item.hour }}"
+        job: "{{ item.job }}"
+        user: "{{ system_user }}"
+      loop:
+        - name: "Backup quotidien"
+          minute: "0"
+          hour: "2"
+          job: "/usr/local/bin/rimoo-backup.sh"
+        - name: "Monitoring toutes les 5 minutes"
+          minute: "*/5"
+          hour: "*"
+          job: "/usr/local/bin/rimoo-monitor.sh"
+        - name: "Nettoyage des logs hebdomadaire"
+          minute: "0"
+          hour: "3"
+          job: "find /var/log/rimoo -name '*.log' -mtime +7 -delete"
+
+  # ============================================================================
+  # HANDLERS
+  # ============================================================================
+  handlers:
+    - name: reload systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: restart rimoo-app
+      systemd:
+        name: rimoo-app
+        state: restarted
+
+    - name: restart rimoo-service1
+      systemd:
+        name: rimoo-service1
+        state: restarted
+
+    - name: restart rimoo-service2
+      systemd:
+        name: rimoo-service2
+        state: restarted
+
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state: restarted
+
+    - name: restart fail2ban
+      systemd:
+        name: fail2ban
+        state: restarted
+
+    - name: restart systemd-logind
+      systemd:
+        name: systemd-logind
+        state: restarted 

@@ -1,0 +1,24 @@
+[Unit]
+Description=Rimoo Raspberry - Auto-déploiement
+After=network.target
+Wants=network.target
+
+[Service]
+Type=oneshot
+User={{ system_user }}
+Group={{ system_user }}
+WorkingDirectory={{ project_path }}
+ExecStart=/usr/local/bin/rimoo-autodeploy.sh
+StandardOutput=journal
+StandardError=journal
+
+# Variables d'environnement
+Environment=PROJECT_PATH={{ project_path }}
+Environment=SYSTEM_USER={{ system_user }}
+
+# Timeouts
+TimeoutStartSec=300
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target 

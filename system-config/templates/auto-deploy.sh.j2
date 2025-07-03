@@ -1,0 +1,323 @@
+#!/bin/bash
+
+# ==============================================================================
+# RIMOO RASPBERRY - SCRIPT D'AUTO-DÉPLOIEMENT
+# ==============================================================================
+
+set -euo pipefail
+
+# Configuration
+PROJECT_PATH="{{ project_path }}"
+SYSTEM_USER="{{ system_user }}"
+LOG_FILE="/var/log/rimoo/autodeploy.log"
+LOCK_FILE="/var/lock/rimoo-autodeploy.lock"
+BACKUP_DIR="/opt/rimoo-backups"
+
+# Couleurs pour les logs
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# ==============================================================================
+# FONCTIONS UTILITAIRES
+# ==============================================================================
+
+log() {
+    echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+log_info() {
+    log "${BLUE}[INFO]${NC} $1"
+}
+
+log_success() {
+    log "${GREEN}[SUCCESS]${NC} $1"
+}
+
+log_warning() {
+    log "${YELLOW}[WARNING]${NC} $1"
+}
+
+log_error() {
+    log "${RED}[ERROR]${NC} $1"
+}
+
+# Vérifier le lock
+check_lock() {
+    if [ -f "$LOCK_FILE" ]; then
+        local lock_pid=$(cat "$LOCK_FILE")
+        if kill -0 "$lock_pid" 2>/dev/null; then
+            log_warning "Déploiement déjà en cours (PID: $lock_pid)"
+            exit 1
+        else
+            log_warning "Suppression du lock file orphelin"
+            rm -f "$LOCK_FILE"
+        fi
+    fi
+}
+
+# Créer le lock
+create_lock() {
+    echo $$ > "$LOCK_FILE"
+    trap 'rm -f "$LOCK_FILE"; exit' INT TERM EXIT
+}
+
+# Vérifier les prérequis
+check_prerequisites() {
+    log_info "Vérification des prérequis..."
+    
+    # Vérifier que le projet existe
+    if [ ! -d "$PROJECT_PATH" ]; then
+        log_error "Le répertoire du projet n'existe pas: $PROJECT_PATH"
+        exit 1
+    fi
+    
+    # Vérifier que c'est un repo Git
+    if [ ! -d "$PROJECT_PATH/.git" ]; then
+        log_error "Le répertoire n'est pas un repository Git: $PROJECT_PATH"
+        exit 1
+    fi
+    
+    # Vérifier la connectivité réseau
+    if ! ping -c 1 google.com &> /dev/null; then
+        log_warning "Pas de connexion internet, déploiement annulé"
+        exit 1
+    fi
+    
+    log_success "Prérequis OK"
+}
+
+# Backup avant déploiement
+backup_current_version() {
+    log_info "Sauvegarde de la version actuelle..."
+    
+    mkdir -p "$BACKUP_DIR"
+    
+    local backup_name="rimoo-backup-$(date +%Y%m%d-%H%M%S)"
+    local backup_path="$BACKUP_DIR/$backup_name"
+    
+    # Sauvegarde avec rsync
+    rsync -av --exclude='.git' --exclude='node_modules' \
+          "$PROJECT_PATH/" "$backup_path/" &> /dev/null
+    
+    # Garder seulement les 5 dernières sauvegardes
+    ls -t "$BACKUP_DIR" | tail -n +6 | xargs -r -I {} rm -rf "$BACKUP_DIR/{}"
+    
+    log_success "Sauvegarde créée: $backup_path"
+}
+
+# Vérifier les changements Git
+check_git_changes() {
+    log_info "Vérification des changements Git..."
+    
+    cd "$PROJECT_PATH"
+    
+    # Fetch les dernières modifications
+    git fetch origin main &> /dev/null
+    
+    # Comparer les commits
+    local local_commit=$(git rev-parse HEAD)
+    local remote_commit=$(git rev-parse origin/main)
+    
+    if [ "$local_commit" = "$remote_commit" ]; then
+        log_info "Aucun changement détecté"
+        return 1
+    fi
+    
+    log_info "Changements détectés:"
+    git log --oneline HEAD..origin/main | head -5 | while read line; do
+        log_info "  → $line"
+    done
+    
+    return 0
+}
+
+# Détecter les fichiers modifiés
+detect_changed_files() {
+    log_info "Détection des fichiers modifiés..."
+    
+    cd "$PROJECT_PATH"
+    
+    # Récupérer la liste des fichiers modifiés
+    local changed_files=$(git diff --name-only HEAD origin/main)
+    
+    # Analyser les types de changements
+    local needs_npm_install=false
+    local needs_service_restart=false
+    local changed_services=()
+    
+    while IFS= read -r file; do
+        case "$file" in
+            package.json|package-lock.json)
+                needs_npm_install=true
+                log_info "  → $file (npm install requis)"
+                ;;
+            app/index.js)
+                needs_service_restart=true
+                changed_services+=("rimoo-app")
+                log_info "  → $file (restart rimoo-app)"
+                ;;
+            app/service1/*)
+                changed_services+=("rimoo-service1")
+                log_info "  → $file (restart rimoo-service1)"
+                ;;
+            app/service2/*)
+                changed_services+=("rimoo-service2")
+                log_info "  → $file (restart rimoo-service2)"
+                ;;
+            system-config/*)
+                log_info "  → $file (configuration système)"
+                ;;
+            *)
+                log_info "  → $file"
+                ;;
+        esac
+    done <<< "$changed_files"
+    
+    # Exporter les variables pour les autres fonctions
+    export NEEDS_NPM_INSTALL=$needs_npm_install
+    export NEEDS_SERVICE_RESTART=$needs_service_restart
+    export CHANGED_SERVICES="${changed_services[@]}"
+}
+
+# Effectuer le pull Git
+perform_git_pull() {
+    log_info "Mise à jour du code..."
+    
+    cd "$PROJECT_PATH"
+    
+    # Stash les changements locaux s'il y en a
+    if ! git diff --quiet; then
+        log_warning "Changements locaux détectés, stash automatique"
+        git stash push -m "Auto-stash avant déploiement $(date)"
+    fi
+    
+    # Pull des changements
+    git pull origin main &> /dev/null
+    
+    log_success "Code mis à jour"
+}
+
+# Installation des dépendances
+install_dependencies() {
+    if [ "$NEEDS_NPM_INSTALL" = true ]; then
+        log_info "Installation des dépendances npm..."
+        
+        cd "$PROJECT_PATH"
+        
+        # Installation avec timeout
+        timeout 300 npm install --production &> /dev/null
+        
+        log_success "Dépendances installées"
+    fi
+}
+
+# Redémarrage des services
+restart_services() {
+    if [ -n "$CHANGED_SERVICES" ]; then
+        log_info "Redémarrage des services modifiés..."
+        
+        for service in $CHANGED_SERVICES; do
+            log_info "  → Redémarrage de $service"
+            systemctl restart "$service"
+            
+            # Vérifier que le service est bien démarré
+            if systemctl is-active "$service" &> /dev/null; then
+                log_success "  → $service redémarré avec succès"
+            else
+                log_error "  → Échec du redémarrage de $service"
+                # Afficher les logs d'erreur
+                journalctl -u "$service" -n 10 --no-pager | while read line; do
+                    log_error "    $line"
+                done
+            fi
+        done
+    fi
+}
+
+# Vérification post-déploiement
+post_deployment_check() {
+    log_info "Vérification post-déploiement..."
+    
+    # Vérifier que les services sont actifs
+    local services=("rimoo-app" "rimoo-service1" "rimoo-service2")
+    
+    for service in "${services[@]}"; do
+        if systemctl is-active "$service" &> /dev/null; then
+            log_success "  → $service: OK"
+        else
+            log_error "  → $service: ERREUR"
+        fi
+    done
+    
+    # Vérifier les ports (si applicable)
+    if netstat -tlnp | grep -q ":3000"; then
+        log_success "  → Port 3000: OK"
+    else
+        log_warning "  → Port 3000: Non disponible"
+    fi
+    
+    log_success "Vérification terminée"
+}
+
+# Nettoyage
+cleanup() {
+    log_info "Nettoyage..."
+    
+    # Nettoyer les logs anciens
+    find /var/log/rimoo -name "*.log" -mtime +7 -delete 2>/dev/null || true
+    
+    # Nettoyer les modules npm non utilisés
+    cd "$PROJECT_PATH"
+    npm prune --production &> /dev/null || true
+    
+    log_success "Nettoyage terminé"
+}
+
+# ==============================================================================
+# FONCTION PRINCIPALE
+# ==============================================================================
+
+main() {
+    log_info "=== DÉBUT DU DÉPLOIEMENT AUTOMATIQUE ==="
+    
+    # Vérifications préliminaires
+    check_lock
+    create_lock
+    check_prerequisites
+    
+    # Vérifier s'il y a des changements
+    if ! check_git_changes; then
+        log_info "Aucun déploiement nécessaire"
+        exit 0
+    fi
+    
+    # Effectuer la sauvegarde
+    backup_current_version
+    
+    # Analyser les changements
+    detect_changed_files
+    
+    # Effectuer le déploiement
+    perform_git_pull
+    install_dependencies
+    restart_services
+    
+    # Vérifications post-déploiement
+    post_deployment_check
+    cleanup
+    
+    log_success "=== DÉPLOIEMENT TERMINÉ AVEC SUCCÈS ==="
+}
+
+# ==============================================================================
+# EXÉCUTION
+# ==============================================================================
+
+# Créer le répertoire de logs s'il n'existe pas
+mkdir -p "$(dirname "$LOG_FILE")"
+
+# Lancer le script principal
+main "$@" 

@@ -1,0 +1,97 @@
+#!/bin/bash
+
+# ==============================================================================
+# RIMOO RASPBERRY - SCRIPT DE BACKUP
+# ==============================================================================
+
+set -euo pipefail
+
+# Configuration
+PROJECT_PATH="{{ project_path }}"
+SYSTEM_USER="{{ system_user }}"
+BACKUP_BASE_DIR="/opt/rimoo-backups"
+LOG_FILE="/var/log/rimoo/backup.log"
+RETENTION_DAYS=30
+
+# ==============================================================================
+# FONCTIONS UTILITAIRES
+# ==============================================================================
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+# Créer un backup complet
+create_full_backup() {
+    local backup_date=$(date +%Y%m%d-%H%M%S)
+    local backup_dir="$BACKUP_BASE_DIR/full-backup-$backup_date"
+    
+    log "Création du backup complet: $backup_dir"
+    
+    mkdir -p "$backup_dir"
+    
+    # Backup du projet
+    log "Backup du projet..."
+    rsync -av --exclude='node_modules' --exclude='.git' \
+          "$PROJECT_PATH/" "$backup_dir/project/" &> /dev/null
+    
+    # Backup des configurations système
+    log "Backup des configurations système..."
+    mkdir -p "$backup_dir/system"
+    
+    # Services systemd
+    cp -r /etc/systemd/system/rimoo-*.* "$backup_dir/system/" 2>/dev/null || true
+    
+    # Configuration nginx
+    cp -r /etc/nginx/sites-available/rimoo "$backup_dir/system/" 2>/dev/null || true
+    
+    # Logs importants
+    mkdir -p "$backup_dir/logs"
+    cp -r /var/log/rimoo "$backup_dir/logs/" 2>/dev/null || true
+    
+    # Créer un fichier de métadonnées
+    cat > "$backup_dir/metadata.json" << EOF
+{
+    "date": "$backup_date",
+    "type": "full",
+    "project_path": "$PROJECT_PATH",
+    "system_user": "$SYSTEM_USER",
+    "hostname": "$(hostname)",
+    "git_commit": "$(cd $PROJECT_PATH && git rev-parse HEAD 2>/dev/null || echo 'unknown')",
+    "size": "$(du -sh $backup_dir | cut -f1)"
+}
+EOF
+    
+    log "Backup complet terminé: $backup_dir"
+}
+
+# Nettoyer les anciens backups
+cleanup_old_backups() {
+    log "Nettoyage des anciens backups (> $RETENTION_DAYS jours)..."
+    
+    find "$BACKUP_BASE_DIR" -maxdepth 1 -type d -name "*backup-*" -mtime +$RETENTION_DAYS -exec rm -rf {} \;
+    
+    log "Nettoyage terminé"
+}
+
+# ==============================================================================
+# FONCTION PRINCIPALE
+# ==============================================================================
+
+main() {
+    mkdir -p "$(dirname "$LOG_FILE")"
+    mkdir -p "$BACKUP_BASE_DIR"
+    
+    log "=== DÉBUT DU BACKUP ==="
+    
+    create_full_backup
+    cleanup_old_backups
+    
+    log "=== BACKUP TERMINÉ ==="
+}
+
+# ==============================================================================
+# EXÉCUTION
+# ==============================================================================
+
+main "$@" 

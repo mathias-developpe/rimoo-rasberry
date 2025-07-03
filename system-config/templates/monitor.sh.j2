@@ -1,0 +1,237 @@
+#!/bin/bash
+
+# ==============================================================================
+# RIMOO RASPBERRY - SCRIPT DE MONITORING SYSTÈME
+# ==============================================================================
+
+set -euo pipefail
+
+# Configuration
+PROJECT_PATH="{{ project_path }}"
+SYSTEM_USER="{{ system_user }}"
+LOG_FILE="/var/log/rimoo/monitor.log"
+STATUS_FILE="/var/log/rimoo/status.json"
+ALERT_FILE="/var/log/rimoo/alerts.log"
+
+# Seuils d'alerte
+CPU_THRESHOLD=80
+MEMORY_THRESHOLD=80
+DISK_THRESHOLD=85
+LOAD_THRESHOLD=4.0
+TEMP_THRESHOLD=75
+
+# ==============================================================================
+# FONCTIONS DE MONITORING
+# ==============================================================================
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+alert() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ALERT: $1" | tee -a "$ALERT_FILE"
+}
+
+# Monitoring CPU
+check_cpu() {
+    local cpu_usage=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print 100 - $1}')
+    cpu_usage=${cpu_usage%.*}  # Supprimer les décimales
+    
+    if [ "$cpu_usage" -gt "$CPU_THRESHOLD" ]; then
+        alert "CPU élevé: ${cpu_usage}%"
+    fi
+    
+    echo "$cpu_usage"
+}
+
+# Monitoring Mémoire
+check_memory() {
+    local memory_usage=$(free | grep Mem | awk '{printf "%.0f", $3/$2 * 100.0}')
+    
+    if [ "$memory_usage" -gt "$MEMORY_THRESHOLD" ]; then
+        alert "Mémoire élevée: ${memory_usage}%"
+    fi
+    
+    echo "$memory_usage"
+}
+
+# Monitoring Disque
+check_disk() {
+    local disk_usage=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')
+    
+    if [ "$disk_usage" -gt "$DISK_THRESHOLD" ]; then
+        alert "Disque plein: ${disk_usage}%"
+    fi
+    
+    echo "$disk_usage"
+}
+
+# Monitoring Charge système
+check_load() {
+    local load_avg=$(uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | sed 's/,//')
+    local load_int=$(echo "$load_avg" | awk '{printf "%.0f", $1 * 100}')
+    local threshold_int=$(echo "$LOAD_THRESHOLD" | awk '{printf "%.0f", $1 * 100}')
+    
+    if [ "$load_int" -gt "$threshold_int" ]; then
+        alert "Charge système élevée: ${load_avg}"
+    fi
+    
+    echo "$load_avg"
+}
+
+# Monitoring Température
+check_temperature() {
+    local temp=""
+    if [ -f /sys/class/thermal/thermal_zone0/temp ]; then
+        temp=$(cat /sys/class/thermal/thermal_zone0/temp)
+        temp=$((temp/1000))
+        
+        if [ "$temp" -gt "$TEMP_THRESHOLD" ]; then
+            alert "Température élevée: ${temp}°C"
+        fi
+    else
+        temp="N/A"
+    fi
+    
+    echo "$temp"
+}
+
+# Monitoring des services
+check_services() {
+    local services=("rimoo-app" "rimoo-service1" "rimoo-service2" "nginx")
+    local services_status=()
+    
+    for service in "${services[@]}"; do
+        if systemctl is-active "$service" &> /dev/null; then
+            services_status+=("$service:OK")
+        else
+            services_status+=("$service:FAILED")
+            alert "Service $service non actif"
+        fi
+    done
+    
+    echo "${services_status[@]}"
+}
+
+# Monitoring des ports
+check_ports() {
+    local ports=("3000" "3001" "80" "443" "22")
+    local ports_status=()
+    
+    for port in "${ports[@]}"; do
+        if netstat -tlnp | grep -q ":$port "; then
+            ports_status+=("$port:OK")
+        else
+            ports_status+=("$port:CLOSED")
+        fi
+    done
+    
+    echo "${ports_status[@]}"
+}
+
+# Monitoring de l'espace disque par répertoire
+check_disk_usage() {
+    local dirs=("$PROJECT_PATH" "/var/log" "/tmp" "/opt")
+    local disk_usage=()
+    
+    for dir in "${dirs[@]}"; do
+        if [ -d "$dir" ]; then
+            local size=$(du -sh "$dir" 2>/dev/null | cut -f1)
+            disk_usage+=("$dir:$size")
+        fi
+    done
+    
+    echo "${disk_usage[@]}"
+}
+
+# Monitoring des processus
+check_processes() {
+    local process_count=$(ps aux | wc -l)
+    local top_processes=$(ps aux --sort=-%cpu | head -5 | tail -4 | awk '{print $11":"$3}')
+    
+    echo "$process_count $top_processes"
+}
+
+# Monitoring réseau
+check_network() {
+    local network_status=""
+    
+    # Vérifier la connectivité
+    if ping -c 1 google.com &> /dev/null; then
+        network_status="OK"
+    else
+        network_status="FAILED"
+        alert "Connexion réseau indisponible"
+    fi
+    
+    # Statistiques réseau
+    local rx_bytes=$(cat /sys/class/net/eth0/statistics/rx_bytes 2>/dev/null || echo "0")
+    local tx_bytes=$(cat /sys/class/net/eth0/statistics/tx_bytes 2>/dev/null || echo "0")
+    
+    echo "$network_status RX:$rx_bytes TX:$tx_bytes"
+}
+
+# ==============================================================================
+# FONCTION PRINCIPALE
+# ==============================================================================
+
+main() {
+    # Créer les répertoires de logs
+    mkdir -p "$(dirname "$LOG_FILE")"
+    mkdir -p "$(dirname "$STATUS_FILE")"
+    
+    # Collecter les métriques
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    local cpu=$(check_cpu)
+    local memory=$(check_memory)
+    local disk=$(check_disk)
+    local load=$(check_load)
+    local temp=$(check_temperature)
+    local services=$(check_services)
+    local ports=$(check_ports)
+    local disk_usage=$(check_disk_usage)
+    local processes=$(check_processes)
+    local network=$(check_network)
+    
+    # Uptime
+    local uptime=$(uptime -p)
+    
+    # Créer le JSON de statut
+    cat > "$STATUS_FILE" << EOF
+{
+    "timestamp": "$timestamp",
+    "system": {
+        "cpu_usage": $cpu,
+        "memory_usage": $memory,
+        "disk_usage": $disk,
+        "load_average": "$load",
+        "temperature": "$temp",
+        "uptime": "$uptime"
+    },
+    "services": "$services",
+    "ports": "$ports",
+    "disk_usage": "$disk_usage",
+    "processes": "$processes",
+    "network": "$network"
+}
+EOF
+    
+    # Log des métriques importantes
+    log "CPU: ${cpu}% | MEM: ${memory}% | DISK: ${disk}% | LOAD: ${load} | TEMP: ${temp}°C"
+    
+    # Vérifier les services critiques
+    if echo "$services" | grep -q "FAILED"; then
+        log "⚠️  Services en échec détectés"
+    fi
+    
+    # Vérifier les seuils critiques
+    if [ "$cpu" -gt "$CPU_THRESHOLD" ] || [ "$memory" -gt "$MEMORY_THRESHOLD" ] || [ "$disk" -gt "$DISK_THRESHOLD" ]; then
+        log "⚠️  Seuils critiques dépassés"
+    fi
+}
+
+# ==============================================================================
+# EXÉCUTION
+# ==============================================================================
+
+main "$@" 

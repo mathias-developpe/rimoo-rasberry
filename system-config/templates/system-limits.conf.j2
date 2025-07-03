@@ -1,0 +1,15 @@
+# Limites système pour Rimoo Raspberry
+# /etc/security/limits.d/rimoo.conf
+
+{{ system_user }} soft nofile 65536
+{{ system_user }} hard nofile 65536
+{{ system_user }} soft nproc 4096
+{{ system_user }} hard nproc 4096
+
+# Limites pour les processus système
+root soft nofile 65536
+root hard nofile 65536
+
+# Limites de mémoire (optionnel)
+# {{ system_user }} soft memlock unlimited
+# {{ system_user }} hard memlock unlimited 

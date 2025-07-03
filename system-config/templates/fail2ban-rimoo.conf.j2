@@ -1,0 +1,29 @@
+# Configuration Fail2ban pour Rimoo Raspberry
+# /etc/fail2ban/jail.d/rimoo.conf
+
+[rimoo-app]
+enabled = true
+port = 3000,3001,3002
+filter = rimoo-app
+logpath = /var/log/rimoo/*.log
+maxretry = 5
+bantime = 3600
+findtime = 600
+
+[nginx-rimoo]
+enabled = true
+port = http,https
+filter = nginx-limit-req
+logpath = /var/log/nginx/rimoo-error.log
+maxretry = 10
+bantime = 1800
+findtime = 300
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 7200
+findtime = 600 

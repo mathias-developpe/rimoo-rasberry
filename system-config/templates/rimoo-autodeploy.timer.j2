@@ -1,0 +1,12 @@
+[Unit]
+Description=Rimoo Raspberry - Timer auto-déploiement
+Requires=rimoo-autodeploy.service
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target 

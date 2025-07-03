@@ -1,0 +1,39 @@
+[Unit]
+Description=Rimoo Raspberry - Service 1
+After=network.target rimoo-app.service
+Wants=network.target
+
+[Service]
+Type=simple
+User={{ system_user }}
+Group={{ system_user }}
+WorkingDirectory={{ project_path }}/app/service1
+ExecStart=/usr/bin/node {{ project_path }}/app/service1/index.js
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=10
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutStopSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Variables d'environnement
+Environment=NODE_ENV=production
+Environment=SERVICE_NAME=service1
+Environment=LOG_LEVEL=info
+
+# Limites de ressources
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Sécurité
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths={{ project_path }}
+ReadWritePaths=/var/log/rimoo
+ReadWritePaths=/tmp
+
+[Install]
+WantedBy=multi-user.target 
